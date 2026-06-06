@@ -1,0 +1,495 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>HotelOS Dashboard</title>
+    <style>
+      body{font-family: Arial, Helvetica, sans-serif;margin:20px;color:#333}
+      .section{margin-bottom:20px}
+      .panel{display:flex;gap:16px;flex-wrap:wrap}
+      .card{border:1px solid #ddd;border-radius:8px;padding:16px;min-width:280px;flex:1}
+      table{width:100%;border-collapse:collapse;margin-top:8px}
+      th,td{border:1px solid #ccc;padding:8px;text-align:left}
+      th{background:#f0f0f0}
+      input,select,textarea,button{font:inherit;padding:8px;margin-top:4px;width:100%;box-sizing:border-box}
+      button{cursor:pointer;background:#1976d2;color:#fff;border:none;border-radius:4px}
+      button.secondary{background:#555}
+      button.small{width:auto;margin-right:8px;margin-top:0}
+      .status{padding:10px;border-radius:6px;margin-bottom:16px}
+      .status.error{background:#fdecea;color:#9e1e1e;border:1px solid #f5c2c7}
+      .status.ok{background:#e8f5e9;color:#1b5e20;border:1px solid #c8e6c9}
+      .hidden{display:none}
+    </style>
+  </head>
+  <body>
+    <h1>HotelOS — Dashboard</h1>
+    <div id="status" class="status hidden"></div>
+
+    <div class="section panel">
+      <div class="card">
+        <h2>Guest Management</h2>
+        <form id="checkin-form">
+          <label>Guest name</label>
+          <input type="text" id="checkin-name" required placeholder="Alice" />
+          <label>Room number</label>
+          <select id="checkin-room" required><option value="">Select a room</option></select>
+          <button type="submit">Check In</button>
+        </form>
+        <form id="checkout-form" style="margin-top:16px;">
+          <label>Guest ID</label>
+          <select id="checkout-id"></select>
+          <button type="submit">Check Out</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Room Service</h2>
+        <form id="order-form">
+          <label>Room number</label>
+          <input type="number" id="order-room" required min="1" max="100" />
+          <label>Items</label>
+          <textarea id="order-items" required placeholder="Coffee, Sandwich"></textarea>
+          <button type="submit">Place Order</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Maintenance</h2>
+        <form id="issue-form">
+          <label>Room number</label>
+          <input type="number" id="issue-room" required min="1" max="100" />
+          <label>Description</label>
+          <textarea id="issue-description" required placeholder="AC not cooling"></textarea>
+          <label>Urgency</label>
+          <select id="issue-urgency">
+            <option value="1">1 - Critical</option>
+            <option value="2">2 - High</option>
+            <option value="3" selected>3 - Medium</option>
+            <option value="4">4 - Low</option>
+            <option value="5">5 - Trivial</option>
+          </select>
+          <button type="submit">Report Issue</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Housekeeping</h2>
+      <div class="card" style="min-width:360px;">
+        <h3>Dirty rooms</h3>
+        <div id="housekeeping-table">Loading housekeeping data…</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Rooms</h2>
+      <div class="card" style="margin-bottom:16px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+          <label>Floor<select id="filter-floor"><option value="">All</option><option value="1">1</option><option value="2">2</option></select></label>
+          <label>Type<select id="filter-type"><option value="">All</option><option value="single">Single</option><option value="double">Double</option><option value="suite">Suite</option><option value="accessible">Accessible</option></select></label>
+          <label>Cleanliness<select id="filter-cleanliness"><option value="">All</option><option value="Clean">Clean</option><option value="Dirty">Dirty</option><option value="Being cleaned">Being cleaned</option><option value="Maintenance">Maintenance</option></select></label>
+          <label>Proximity<select id="filter-proximity"><option value="">All</option><option value="elevator">Elevator</option><option value="stairs">Stairs</option></select></label>
+          <label>Status<select id="filter-status"><option value="">All</option><option value="Available">Available</option><option value="Occupied">Occupied</option></select></label>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+          <button id="apply-filters" class="small">Apply Filters</button>
+          <button id="reset-filters" class="small secondary">Reset Filters</button>
+        </div>
+      </div>
+      <div id="rooms-section">Loading rooms…</div>
+    </div>
+    <div class="section">
+      <h2>Room Service Orders</h2>
+      <div id="orders-section">Loading orders…</div>
+    </div>
+    <div class="section">
+      <h2>Maintenance Issues</h2>
+      <div id="issues-section">Loading issues…</div>
+    </div>
+    <div class="section">
+      <h2>Billing</h2>
+      <div id="billing-section">No billing activity yet.</div>
+    </div>
+    <div class="section">
+      <h2>Guests</h2>
+      <div id="guests-section">Loading guests…</div>
+    </div>
+
+    <script>
+      const state = { rooms: null, orders: null, issues: null, guests: [], billing: null };
+      const filters = { floor: '', room_type: '', cleanliness_status: '', proximity: '', status: '' };
+      const statusEl = document.getElementById('status');
+      const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+
+      ws.onopen = () => setStatus('Connected to dashboard', false);
+      ws.onclose = () => setStatus('Dashboard websocket disconnected', true);
+      ws.onerror = () => setStatus('WebSocket error', true);
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'rooms') state.rooms = msg.payload.rooms;
+        if (msg.type === 'orders') state.orders = msg.payload.orders;
+        if (msg.type === 'issues') state.issues = msg.payload.issues;
+        if (msg.type === 'guests') state.guests = msg.payload;
+        render();
+      };
+
+      document.getElementById('checkin-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const name = document.getElementById('checkin-name').value.trim();
+        const room = document.getElementById('checkin-room').value;
+        if (!name) return;
+        const params = { name };
+        if (room) params.room_number = room;
+        await performAction('/api/reception/checkin', params);
+      });
+
+      document.getElementById('checkout-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const guestId = document.getElementById('checkout-id').value;
+        if (!guestId) return;
+        await performAction('/api/reception/checkout', { guest_id: guestId });
+      });
+
+      document.getElementById('order-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const room = document.getElementById('order-room').value;
+        const items = document.getElementById('order-items').value.trim();
+        if (!room || !items) return;
+        await performAction('/api/roomservice/order', { room_number: room, items });
+      });
+
+      document.getElementById('issue-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const room = document.getElementById('issue-room').value;
+        const description = document.getElementById('issue-description').value.trim();
+        const urgency = document.getElementById('issue-urgency').value;
+        if (!room || !description) return;
+        await performAction('/api/maintenance/report', { room_number: room, description, urgency });
+      });
+
+      document.getElementById('mark-clean-form')?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const room = document.getElementById('mark-clean-room').value;
+        if (!room) return;
+        await performAction('/api/housekeeping/mark_clean', { room_number: room });
+      });
+
+      document.getElementById('apply-filters').addEventListener('click', async () => {
+        filters.floor = document.getElementById('filter-floor').value;
+        filters.room_type = document.getElementById('filter-type').value;
+        filters.cleanliness_status = document.getElementById('filter-cleanliness').value;
+        filters.proximity = document.getElementById('filter-proximity').value;
+        filters.status = document.getElementById('filter-status').value;
+        await refreshState();
+      });
+
+      document.getElementById('reset-filters').addEventListener('click', async () => {
+        document.getElementById('filter-floor').value = '';
+        document.getElementById('filter-type').value = '';
+        document.getElementById('filter-cleanliness').value = '';
+        document.getElementById('filter-proximity').value = '';
+        document.getElementById('filter-status').value = '';
+        filters.floor = '';
+        filters.room_type = '';
+        filters.cleanliness_status = '';
+        filters.proximity = '';
+        filters.status = '';
+        await refreshState();
+      });
+
+      document.getElementById('housekeeping-table').addEventListener('click', async (event) => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) return;
+        const roomNumber = button.dataset.roomNumber;
+        const action = button.dataset.action;
+        const endpoint = action === 'start-cleaning'
+          ? '/api/housekeeping/mark_cleaning'
+          : '/api/housekeeping/mark_clean';
+        await performAction(endpoint, { room_number: roomNumber });
+      });
+
+      async function performAction(endpoint, params) {
+        try {
+          const result = await postJson(endpoint, params);
+          setStatus('Action completed: ' + endpoint, false);
+          console.log(result);          if (result.bill) {
+            state.billing = result.bill;
+          }          await refreshState();
+        } catch (err) {
+          setStatus(err.message, true);
+        }
+      }
+
+      async function postJson(url, params) {
+        const query = new URLSearchParams(params).toString();
+        const response = await fetch(url + (query ? `?${query}` : ''), { method: 'POST' });
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`${response.status} ${response.statusText}: ${text}`);
+        }
+        return response.json();
+      }
+
+      function setStatus(message, isError) {
+        statusEl.textContent = message;
+        statusEl.className = isError ? 'status error' : 'status ok';
+        statusEl.classList.remove('hidden');
+      }
+
+      function render() {
+        renderRooms();
+        renderOrders();
+        renderIssues();
+        renderBilling();
+        renderGuests();
+        renderHousekeeping();
+        populateGuestSelect();
+        populateCheckinRoomSelect();
+      }
+
+      function renderRooms() {
+        const container = document.getElementById('rooms-section');
+        if (!state.rooms) {
+          container.textContent = 'No room data yet.';
+          return;
+        }
+        let visibleRooms = state.rooms;
+        if (filters.floor) visibleRooms = visibleRooms.filter((room) => room.floor === Number(filters.floor));
+        if (filters.room_type) visibleRooms = visibleRooms.filter((room) => room.type.toLowerCase() === filters.room_type.toLowerCase());
+        if (filters.cleanliness_status) visibleRooms = visibleRooms.filter((room) => room.cleanliness_status.toLowerCase() === filters.cleanliness_status.toLowerCase());
+        if (filters.proximity) visibleRooms = visibleRooms.filter((room) => room.proximity.toLowerCase() === filters.proximity.toLowerCase());
+        if (filters.status) visibleRooms = visibleRooms.filter((room) => room.status.toLowerCase() === filters.status.toLowerCase());
+
+        if (visibleRooms.length === 0) {
+          container.textContent = 'No rooms match the selected filters.';
+          return;
+        }
+
+        const rows = visibleRooms.map((room) => {
+          const guest = room.guest ? `${room.guest.name}` : '-';
+          const action = room.status === 'Occupied' && room.guest
+            ? `<button data-guest-id="${room.guest.id}" class="small">Checkout</button>`
+            : '-';
+          const cleanedAt = room.cleanliness_time ? room.cleanliness_time.substring(0, 10) : '-';
+          return `<tr>
+            <td>${room.number}</td>
+            <td>${room.floor}</td>
+            <td>${room.type}</td>
+            <td>${room.status}</td>
+            <td>${room.cleanliness_status}</td>
+            <td>${cleanedAt}</td>
+            <td>${room.proximity}</td>
+            <td>${guest}</td>
+            <td>${action}</td>
+          </tr>`;
+        }).join('');
+        container.innerHTML = `<table><thead><tr><th>Room</th><th>Floor</th><th>Type</th><th>Status</th><th>Cleanliness</th><th>Cleaned At</th><th>Proximity</th><th>Guest</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table>`;
+        container.querySelectorAll('button[data-guest-id]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            await performAction('/api/reception/checkout', { guest_id: button.dataset.guestId });
+          });
+        });
+      }
+
+      function renderOrders() {
+        const container = document.getElementById('orders-section');
+        if (!Array.isArray(state.orders)) {
+          container.textContent = 'No order data yet.';
+          return;
+        }
+        if (state.orders.length === 0) {
+          container.textContent = 'No orders.';
+          return;
+        }
+        const rows = state.orders.map((order) => `
+          <tr>
+            <td>${order.id}</td>
+            <td>${order.room}</td>
+            <td>${order.items}</td>
+            <td>${order.state}</td>
+            <td>
+              <button data-order-id="${order.id}" data-state="Received" class="small">Received</button>
+              <button data-order-id="${order.id}" data-state="Preparing" class="small">Preparing</button>
+              <button data-order-id="${order.id}" data-state="Delivered" class="small">Delivered</button>
+            </td>
+          </tr>`).join('');
+        container.innerHTML = `<table><thead><tr><th>ID</th><th>Room</th><th>Items</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
+        container.querySelectorAll('button[data-order-id]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            await performAction('/api/roomservice/update_state', { order_id: button.dataset.orderId, state: button.dataset.state });
+          });
+        });
+      }
+
+      function renderIssues() {
+        const container = document.getElementById('issues-section');
+        if (!Array.isArray(state.issues)) {
+          container.textContent = 'No issue data yet.';
+          return;
+        }
+        if (state.issues.length === 0) {
+          container.textContent = 'No open issues.';
+          return;
+        }
+        const rows = state.issues.map((issue) => `
+          <tr>
+            <td>${issue.id}</td>
+            <td>${issue.room}</td>
+            <td>${issue.description}</td>
+            <td>${issue.urgency}</td>
+            <td>${issue.status}</td>
+            <td><button data-issue-id="${issue.id}" class="small">Resolve</button></td>
+          </tr>`).join('');
+        container.innerHTML = `<table><thead><tr><th>ID</th><th>Room</th><th>Description</th><th>Urgency</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table>`;
+        container.querySelectorAll('button[data-issue-id]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            await performAction('/api/maintenance/resolve', { issue_id: button.dataset.issueId });
+          });
+        });
+      }
+
+      function renderGuests() {
+        const container = document.getElementById('guests-section');
+        if (!Array.isArray(state.guests)) {
+          container.textContent = 'No guest data yet.';
+          return;
+        }
+        if (state.guests.length === 0) {
+          container.textContent = 'No active guests.';
+          return;
+        }
+        const rows = state.guests.map((guest) => `<tr><td>${guest.name}</td><td>${guest.room}</td></tr>`).join('');
+        container.innerHTML = `<table><thead><tr><th>Name</th><th>Room</th></tr></thead><tbody>${rows}</tbody></table>`;
+      }
+
+      function renderBilling() {
+        const container = document.getElementById('billing-section');
+        if (!state.billing) {
+          container.textContent = 'No billing activity yet.';
+          return;
+        }
+        const bill = state.billing;
+        container.innerHTML = `
+          <div class="card">
+            <p><strong>Guest ID:</strong> ${bill.guest_id}</p>
+            <p><strong>Room nights:</strong> ${bill.nights}</p>
+            <p><strong>Room rate:</strong> $${bill.room_rate.toFixed(2)}</p>
+            <p><strong>Room charge:</strong> $${bill.room_charge.toFixed(2)}</p>
+            <p><strong>Service charge:</strong> $${bill.service_charge.toFixed(2)}</p>
+            <p><strong>Total amount:</strong> $${bill.amount.toFixed(2)}</p>
+            <button id="payment-complete" class="small" style="margin-top:12px;">Payment Complete</button>
+          </div>
+        `;
+        document.getElementById('payment-complete').addEventListener('click', () => {
+          state.billing = null;
+          render();
+        });
+      }
+
+      function renderHousekeeping() {
+        const container = document.getElementById('housekeeping-table');
+        if (!state.rooms) {
+          container.textContent = 'No housekeeping data yet.';
+          return;
+        }
+        const targets = state.rooms.filter((room) => room.cleanliness_status !== 'Clean');
+        if (targets.length === 0) {
+          container.textContent = 'No rooms need housekeeping at the moment.';
+          return;
+        }
+        const rows = targets.map((room) => {
+          const cleanedAt = room.cleanliness_time ? room.cleanliness_time.substring(0, 10) : '-';
+          const actionLabel = room.cleanliness_status === 'Dirty' ? 'Start Cleaning' : 'Mark Clean';
+          const actionType = room.cleanliness_status === 'Dirty' ? 'start-cleaning' : 'mark-clean';
+          return `<tr>
+            <td>${room.number}</td>
+            <td>${room.type}</td>
+            <td>${room.cleanliness_status}</td>
+            <td>${cleanedAt}</td>
+            <td><button data-room-number="${room.number}" data-action="${actionType}" class="small">${actionLabel}</button></td>
+          </tr>`;
+        }).join('');
+        container.innerHTML = `<table><thead><tr><th>Room</th><th>Type</th><th>Cleanliness</th><th>Last cleaned</th><th>Action</th></thead><tbody>${rows}</tbody></table>`;
+      }
+
+      function populateGuestSelect() {
+        const select = document.getElementById('checkout-id');
+        select.innerHTML = '<option value="">Select guest</option>' + state.guests.map((guest) => `
+          <option value="${guest.id}">${guest.name} (${guest.room})</option>`).join('');
+      }
+
+      function populateCheckinRoomSelect() {
+        const select = document.getElementById('checkin-room');
+        const availableRooms = state.rooms ? state.rooms.filter((room) => room.status === 'Available') : [];
+        const options = ['<option value="">Any available</option>'].
+          concat(availableRooms.map((room) => `<option value="${room.number}">${room.number} - ${room.type} (Floor ${room.floor})</option>`));
+        select.innerHTML = options.join('');
+      }
+
+      function buildRoomQuery() {
+        const params = new URLSearchParams();
+        if (filters.floor) params.set('floor', filters.floor);
+        if (filters.room_type) params.set('room_type', filters.room_type);
+        if (filters.cleanliness_status) params.set('cleanliness_status', filters.cleanliness_status);
+        if (filters.proximity) params.set('proximity', filters.proximity);
+        if (filters.status) params.set('status', filters.status);
+        return params.toString() ? `?${params.toString()}` : '';
+      }
+
+      async function refreshState() {
+        const roomQuery = buildRoomQuery();
+        const roomsUrl = '/api/reception/rooms' + roomQuery;
+        const requests = [
+          fetch(roomsUrl),
+          fetch('/api/roomservice/orders'),
+          fetch('/api/maintenance/open'),
+        ];
+
+        const results = await Promise.allSettled(requests);
+        let hadError = false;
+
+        if (results[0].status === 'fulfilled' && results[0].value.ok) {
+          try {
+            state.rooms = (await results[0].value.json()).rooms;
+          } catch {
+            state.rooms = [];
+            hadError = true;
+          }
+        } else {
+          state.rooms = [];
+          hadError = true;
+        }
+
+        if (results[1].status === 'fulfilled' && results[1].value.ok) {
+          try {
+            state.orders = (await results[1].value.json()).orders;
+          } catch {
+            state.orders = [];
+            hadError = true;
+          }
+        } else {
+          state.orders = [];
+          hadError = true;
+        }
+
+        if (results[2].status === 'fulfilled' && results[2].value.ok) {
+          try {
+            state.issues = (await results[2].value.json()).issues;
+          } catch {
+            state.issues = [];
+            hadError = true;
+          }
+        } else {
+          state.issues = [];
+          hadError = true;
+        }
+
+        state.guests = state.rooms.filter((room) => room.guest).map((room) => room.guest);
+        if (hadError) {
+          setStatus('Some dashboard data could not be loaded, but partial data is shown.', true);
+        }
+        render();
+      }
+
+      refreshState();
+    </script>
+  </body>
+</html>
